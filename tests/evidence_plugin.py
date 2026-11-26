@@ -138,7 +138,8 @@ def pytest_sessionfinish(session, exitstatus):
                      "failed": sum(t["outcome"] == "failed" for t in tests),
                      "not_executed": sum(t["outcome"] == "not executed" for t in tests),
                      "scopes": sorted({t["scope"] for t in tests}),
-                     "controls": sorted({t["control"] for t in tests if t["control"]}),
+                     "controls": sorted({t["control"] for t in tests
+                                         if t["control"] and not t["control"].startswith("src/triage_fakes/")}),
                      "tests": tests})
     doc = {
         "generated_by": "pytest --evidence",

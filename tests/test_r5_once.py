@@ -220,9 +220,13 @@ def test_every_page_of_the_folder_is_read(provider, tmp_path, proof):
         world.gmail.load_eml(eml)
         world.graph.load_eml(eml)
     s = world.job(FileLedger(tmp_path)).run()
-    pages = sum(1 for e in world.recorder.emitted if e.method == "GET" and e.path.endswith("/messages"))
+    # Only the listing of the configured label or folder; Drafts and Sent Items lookups are not pages of it.
+    from triage_fakes import FakeGraph
+    folder_list = ("/gmail/v1/users/me/messages" if provider == "gmail"
+                   else f"/v1.0/me/mailFolders/{FakeGraph.FOLDER}/messages")
+    pages = sum(1 for e in world.recorder.emitted if e.method == "GET" and e.path == folder_list)
     assert s.seen == 150 and s.drafts == 150 and len(drafts(world)) == 150 and pages >= 2
-    proof.line(f"{provider}: messages in folder=150, listed={s.seen}, drafts={s.drafts}, list pages={pages}")
+    proof.line(f"{provider}: messages in folder=150, listed={s.seen}, drafts={s.drafts}, list pages of the folder={pages}")
 
 
 def world_root():

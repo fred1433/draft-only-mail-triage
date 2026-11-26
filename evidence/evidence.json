@@ -1,10 +1,10 @@
 {
  "generated_by": "pytest --evidence",
- "recorded_at_utc": "2026-11-26T14:54:22Z",
- "commit": "f5da1843699f3428e4ae0148bb86cef7ca6a4a98",
+ "recorded_at_utc": "2026-11-26T15:05:23Z",
+ "commit": "7a7aa6e1ab6971b85f090e73379823182c6b4e97",
  "worktree_dirty": false,
  "runner": "github-actions",
- "run_url": "https://github.com/fred1433/draft-only-mail-triage/actions/runs/45843587723",
+ "run_url": "https://github.com/fred1433/draft-only-mail-triage/actions/runs/45845442273",
  "python": "3.12.16",
  "platform": "x86_64",
  "exit_status": 0,
@@ -106,7 +106,7 @@
      "control": "src/triage/transport.py:75",
      "scope": "local, mocked connectors",
      "outcome": "passed",
-     "duration_ms": 19,
+     "duration_ms": 18,
      "command": "python -m pytest 'tests/test_r1_draft_only.py::test_send_delete_and_foreign_hosts_are_blocked_before_emission[DELETE gmail.googleapis.com/gmail/v1/users/me/messages/abc]'",
      "output": [
       "PolicyViolation: blocked before send: DELETE gmail.googleapis.com/gmail/v1/users/me/messages/abc (route not on the allowlist)",
@@ -317,7 +317,7 @@
      "control": "src/triage/job.py:59",
      "scope": "local, mocked connectors",
      "outcome": "passed",
-     "duration_ms": 33,
+     "duration_ms": 32,
      "command": "python -m pytest 'tests/test_r1_draft_only.py::test_a_policy_violation_stops_the_run'",
      "output": [
       "run stopped: blocked before send: POST gmail.googleapis.com/gmail/v1/users/me/drafts/send (route not on the allowlist)"
@@ -343,7 +343,7 @@
      "control": "src/triage/transport.py:75",
      "scope": "local, mocked connectors",
      "outcome": "passed",
-     "duration_ms": 2821,
+     "duration_ms": 2708,
      "command": "python -m pytest 'tests/test_r1_draft_only.py::test_mutations_make_the_suite_red'",
      "output": [
       "gmail: send the draft right after creating it (drafts.send): suite red (1 failed), blocked: ['POST gmail.googleapis.com/gmail/v1/users/me/drafts/send']",
@@ -405,7 +405,7 @@
      "control": "terraform/main.tf",
      "scope": "configuration validated locally",
      "outcome": "passed",
-     "duration_ms": 799,
+     "duration_ms": 857,
      "command": "python -m pytest 'tests/test_r2_r3_r4_config.py::test_terraform_fmt_and_validate'",
      "output": [
       "Terraform v1.17.2; provider scaleway 2.93.0",
@@ -420,7 +420,7 @@
      "control": "terraform/main.tf",
      "scope": "configuration validated locally",
      "outcome": "passed",
-     "duration_ms": 122,
+     "duration_ms": 84,
      "command": "python -m pytest 'tests/test_r2_r3_r4_config.py::test_tflint'",
      "output": [
       "TFLint version 0.66.0: no issue reported"
@@ -650,7 +650,7 @@
      "control": "src/triage/job.py:107",
      "scope": "local, mocked connectors",
      "outcome": "passed",
-     "duration_ms": 96,
+     "duration_ms": 95,
      "command": "python -m pytest 'tests/test_r5_once.py::test_next_hour_in_a_new_container_changes_nothing[gmail]'",
      "output": [
       "gmail hour 1: drafts=5 tasks=9",
@@ -664,7 +664,7 @@
      "control": "src/triage/job.py:107",
      "scope": "local, mocked connectors",
      "outcome": "passed",
-     "duration_ms": 52,
+     "duration_ms": 51,
      "command": "python -m pytest 'tests/test_r5_once.py::test_next_hour_in_a_new_container_changes_nothing[graph]'",
      "output": [
       "graph hour 1: drafts=5 tasks=9",
@@ -678,7 +678,7 @@
      "control": "src/triage/ledger.py:96",
      "scope": "local, mocked connectors",
      "outcome": "passed",
-     "duration_ms": 85,
+     "duration_ms": 83,
      "command": "python -m pytest 'tests/test_r5_once.py::test_two_concurrent_runs_make_one_draft_per_email'",
      "output": [
       "run-a drafts=2 run-b drafts=3; drafts per thread: [1, 1, 1, 1, 1]"
@@ -757,7 +757,7 @@
      "control": "src/triage/job.py:107",
      "scope": "local, mocked connectors",
      "outcome": "passed",
-     "duration_ms": 14,
+     "duration_ms": 13,
      "command": "python -m pytest 'tests/test_r5_once.py::test_a_draft_the_human_touched_is_never_recreated[sent]'",
      "output": [
       "draft sent by a person; hours 2 and 3: drafts +0"
@@ -852,11 +852,11 @@
      "control": "src/triage/log.py:29",
      "scope": "local, mocked connectors",
      "outcome": "passed",
-     "duration_ms": 10,
+     "duration_ms": 9,
      "command": "python -m pytest 'tests/test_r6_logs.py::test_canaries_never_reach_the_journal'",
      "output": [
       "journal lines: 4; canaries found: 0 of 6 (journal and ledger)",
-      "sample line: {\"at\": \"2026-11-26T14:54:22Z\", \"event\": \"draft_created\", \"key\": \"76504410fbc2396e\", \"lang\": \"en\", \"run\": \"868b6beddc5b\"}"
+      "sample line: {\"at\": \"2026-11-26T15:05:23Z\", \"event\": \"draft_created\", \"key\": \"76504410fbc2396e\", \"lang\": \"en\", \"run\": \"c2519ebec503\"}"
      ]
     },
     {
@@ -979,7 +979,7 @@
      "control": "src/triage/job.py:107",
      "scope": "local, mocked connectors",
      "outcome": "passed",
-     "duration_ms": 9,
+     "duration_ms": 8,
      "command": "python -m pytest 'tests/test_r7_untrusted.py::test_bad_model_output_means_no_draft[invalid JSON-Sure! Here is the reply: Dear Dr. Albers...]'",
      "output": [
       "invalid JSON -> needs_human:invalid_output; drafts=0; task='Manual reply needed' + thread link"
@@ -1168,7 +1168,7 @@
      "control": "src/triage/job.py:41",
      "scope": "local, mocked connectors",
      "outcome": "passed",
-     "duration_ms": 17,
+     "duration_ms": 18,
      "command": "python -m pytest 'tests/test_r8_language.py::test_german_email_gets_a_german_draft'",
      "output": [
       "detected draft language: de; Content-Language: de"
@@ -1194,7 +1194,7 @@
      "control": "src/triage/job.py:41",
      "scope": "local, mocked connectors",
      "outcome": "passed",
-     "duration_ms": 14,
+     "duration_ms": 13,
      "command": "python -m pytest 'tests/test_r8_language.py::test_other_language_gets_english_and_is_flagged'",
      "output": [
       "detected: other -> reply language: en; event language_fallback logged"

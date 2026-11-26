@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "draft-only-mail-triage"
+version = "0.1.0"
+description = "Hourly mail triage job that only ever writes drafts, with an evidence register."
+requires-python = ">=3.12"
+dependencies = ["httpx==0.28.1", "pydantic==2.12.5"]
+
+[project.optional-dependencies]
+dev = ["pytest==9.0.2"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["evidence(req, control, scope): links a test to a row of the evidence register"]
+

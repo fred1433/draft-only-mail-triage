@@ -1,0 +1,122 @@
+name: monthly-rebuild
+
+# First day of each month at 03:00 UTC, and on demand.
+on:
+  schedule:
+    - cron: '0 3 1 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash          # -eo pipefail
+
+jobs:
+  rebuild:
+    runs-on: ubuntu-24.04            # GitHub-hosted, amd64
+    timeout-minutes: 40
+    env:
+      IMAGE: draft-only-triage
+      LLM_MODEL: qwen3-235b-a22b-instruct-2507
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - uses: terraform-linters/setup-tflint@v4
+
+      - name: Install
+        run: python -m pip install -e '.[dev]' pip-audit cyclonedx-bom
+
+      - name: Tests and evidence register (includes terraform fmt/validate and the mutation check)
+        id: tests
+        run: python -m pytest -q --evidence evidence/evidence.json | tee pytest.txt
+
+      - name: Dependency audit
+        id: audit
+        run: pip-audit -r requirements.lock --format json --output pip-audit.json
+
+      - name: Build from scratch, linux/amd64
+        id: build
+        run: |
+          docker build --no-cache --pull --platform linux/amd64 -t "$IMAGE:candidate" .
+          echo "image_id=$(docker image inspect --format '{{.Id}}' "$IMAGE:candidate")" >> "$GITHUB_OUTPUT"
+
+      - name: Image runs as non-root
+        run: |
+          uid=$(docker run --rm --entrypoint id "$IMAGE:candidate" -u)
+          echo "uid=$uid"; test "$uid" != "0"
+
+      - name: Run the image on the corpus, network disabled
+        id: corpus
+        run: docker run --rm --network none "$IMAGE:candidate" demo 2>&1 | tee corpus-run.txt
+
+      - name: SBOM (CycloneDX) of the image's Python environment
+        id: sbom
+        run: |
+          docker run --rm --entrypoint pip "$IMAGE:candidate" freeze --all > image-freeze.txt
+          cyclonedx-py requirements image-freeze.txt --output-format JSON --output-file sbom.cdx.json
+
+      - name: Are deployment secrets configured?
+        id: secrets
+        run: echo "present=${{ secrets.SCW_SECRET_KEY != '' && secrets.SCW_ACCESS_KEY != '' && secrets.SCW_JOB_DEFINITION_ID != '' }}" >> "$GITHUB_OUTPUT"
+
+      - name: Model still in the Scaleway catalogue
+        id: catalogue
+        if: steps.secrets.outputs.present == 'true'
+        env:
+          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
+        run: |
+          curl -fsS -H "Authorization: Bearer $SCW_SECRET_KEY" https://api.scaleway.ai/v1/models \
+            | python -c "import sys,json; ids={m['id'] for m in json.load(sys.stdin)['data']}; sys.exit(0 if '$LLM_MODEL' in ids else 1)"
+
+      - name: Push by digest to rg.fr-par.scw.cloud and update the job
+        id: push
+        if: steps.secrets.outputs.present == 'true'
+        env:
+          SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
+          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
+          SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_PROJECT_ID }}
+          JOB_ID: ${{ secrets.SCW_JOB_DEFINITION_ID }}
+        run: |
+          echo "$SCW_SECRET_KEY" | docker login rg.fr-par.scw.cloud/draft-only-triage -u nologin --password-stdin
+          docker tag "$IMAGE:candidate" "rg.fr-par.scw.cloud/draft-only-triage/$IMAGE:rebuild-${{ github.run_id }}"
+          docker push "rg.fr-par.scw.cloud/draft-only-triage/$IMAGE:rebuild-${{ github.run_id }}"
+          digest=$(docker image inspect --format '{{index .RepoDigests 0}}' "rg.fr-par.scw.cloud/draft-only-triage/$IMAGE:rebuild-${{ github.run_id }}" | cut -d@ -f2)
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          curl -fsSL https://raw.githubusercontent.com/scaleway/scaleway-cli/master/scripts/get.sh | sh
+          scw jobs definition update "$JOB_ID" image-uri="rg.fr-par.scw.cloud/draft-only-triage/$IMAGE@$digest" region=fr-par
+
+      - name: Evidence line for this rebuild
+        if: always()
+        env:
+          TESTS: ${{ steps.tests.outcome }}
+          AUDIT: ${{ steps.audit.outcome }}
+          BUILD: ${{ steps.build.outcome }}
+          IMAGE_ID: ${{ steps.build.outputs.image_id }}
+          CORPUS: ${{ steps.corpus.outcome }}
+          SBOM: ${{ steps.sbom.outcome }}
+          CATALOGUE: ${{ steps.catalogue.outcome }}
+          PUSH: ${{ steps.push.outcome }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: python tools/rebuild_line.py >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: rebuild-evidence
+          path: |
+            evidence/evidence.json
+            rebuild-evidence.json
+            pytest.txt
+            pip-audit.json
+            corpus-run.txt
+            sbom.cdx.json

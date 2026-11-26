@@ -1,0 +1,38 @@
+{
+ "R1": {
+  "title": "No message leaves the mailbox without a human",
+  "statement": "The job can read and write drafts. It cannot send, forward, reply, move or delete, whatever the token would allow.",
+  "lead": "gmail.compose can send. Here is what stops it, and the mutation that proves the test bites.",
+  "residual": "The Gmail token can send; the allowlist is what stops it."
+ },
+ "R2": {
+  "title": "One Scaleway region",
+  "statement": "Job, secrets, image registry and ledger are declared in fr-par only, with no fallback region.",
+  "residual": "Serverless inference is in Paris today; the provider commits to Europe. Dedicated Deployment keeps it in one region (paid option)."
+ },
+ "R3": {
+  "title": "Least privilege, residual risk declared",
+  "statement": "Each connector asks for the narrowest scope that does the work, and what the code adds on top is written down.",
+  "residual": "Graph Mail.ReadWrite can delete and the Todoist token reaches every project; both limits live in code. No allowlist stops a stolen token."
+ },
+ "R4": {
+  "title": "Monthly rebuild",
+  "statement": "The image is rebuilt from scratch every month, tested, audited and described by an SBOM before it can replace the running one."
+ },
+ "R5": {
+  "title": "Each email handled once",
+  "statement": "A durable ledger and a check with the provider mean one draft and one set of tasks per email, across hours, containers, crashes and concurrent runs."
+ },
+ "R6": {
+  "title": "No content in logs",
+  "statement": "The journal carries event names, reason codes, counts and hashes. No subject, address, body, draft or secret."
+ },
+ "R7": {
+  "title": "Untrusted email cannot steer the job",
+  "statement": "The model has no tools and picks no identifier. Its output is bounded by a schema and checked; anything doubtful goes to a person."
+ },
+ "R8": {
+  "title": "Replies in the sender's language",
+  "statement": "English, German and Arabic get a reply in kind, right to left for Arabic, in the sender's own thread. Anything else gets English, flagged."
+ }
+}

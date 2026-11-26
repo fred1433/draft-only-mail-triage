@@ -1,0 +1,7 @@
+.venv
+.git
+site
+out
+tests
+**/__pycache__
+*.egg-info

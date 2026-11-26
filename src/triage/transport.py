@@ -196,38 +196,68 @@ def _todoist_sync_body(project_id: str) -> Callable[[bytes], str | None]:
     return check
 
 
+def _gmail_list_query(label: str) -> Callable[[dict[str, str]], str | None]:
+    """messages.list only on the configured label, nothing else in the query."""
+    def check(query: dict[str, str]) -> str | None:
+        if query.get("labelIds") != label:
+            return "messages may be listed in the configured label only"
+        if not set(query) <= {"labelIds", "maxResults", "pageToken", "q"}:
+            return "unexpected list parameter"
+        return None
+    return check
+
+
+def _graph_folders(folder: str) -> str:
+    """The configured folder, as sent (url-encoded) or decoded, plus Drafts and Sent Items."""
+    from urllib.parse import quote
+    names = {re.escape(folder), re.escape(quote(folder, safe="")), "drafts", "sentitems"}
+    return "(?:" + "|".join(sorted(names)) + ")"
+
+
 def build_rules(*, todoist_project_id: str, llm_base_url: str,
+                gmail_label: str | None = None, graph_folder: str | None = None,
                 ledger_s3: tuple[str, str] | None = None,
                 ms_tenant: str | None = None) -> list[Rule]:
-    """The complete allowlist. Anything not produced here is refused."""
+    """The complete allowlist. Anything not produced here is refused. Mail routes exist
+    only for the provider whose label or folder is configured, and listing is pinned to
+    that label or folder."""
     g = "/gmail/v1/users/me"
     gm = "gmail.googleapis.com"
-    rules = [
-        Rule("gmail.labels.list", "https", gm, "GET", rf"{g}/labels"),
-        Rule("gmail.messages.list", "https", gm, "GET", rf"{g}/messages"),
-        Rule("gmail.messages.get", "https", gm, "GET", rf"{g}/messages/{ID}"),
-        Rule("gmail.threads.get", "https", gm, "GET", rf"{g}/threads/{ID}"),
-        Rule("gmail.drafts.list", "https", gm, "GET", rf"{g}/drafts"),
-        Rule("gmail.drafts.get", "https", gm, "GET", rf"{g}/drafts/{ID}"),
-        Rule("gmail.drafts.create", "https", gm, "POST", rf"{g}/drafts", body_check=_gmail_draft_body),
-        Rule("google.oauth.refresh", "https", "oauth2.googleapis.com", "POST", r"/token"),
-    ]
+    rules: list[Rule] = []
+    if gmail_label:
+        rules += _gmail_rules(g, gm, gmail_label)
     ms = "graph.microsoft.com"
     m = "/v1.0/me"
-    rules += [
-        Rule("graph.folders.get", "https", ms, "GET", rf"{m}/mailFolders/{GRAPH_ID}"),
-        Rule("graph.folder.messages", "https", ms, "GET", rf"{m}/mailFolders/{GRAPH_ID}/messages"),
-        Rule("graph.messages.get", "https", ms, "GET", rf"{m}/messages/{GRAPH_ID}"),
-        Rule("graph.attachments.list", "https", ms, "GET", rf"{m}/messages/{GRAPH_ID}/attachments",
-             query_check=_graph_attachment_query),
-        Rule("graph.messages.createReply", "https", ms, "POST", rf"{m}/messages/{GRAPH_ID}/createReply",
-             body_check=_graph_reply_body),
-    ]
+    if graph_folder:
+        folders = _graph_folders(graph_folder)
+        rules += [
+            Rule("graph.folder.messages", "https", ms, "GET", rf"{m}/mailFolders/{folders}/messages"),
+            Rule("graph.messages.get", "https", ms, "GET", rf"{m}/messages/{GRAPH_ID}"),
+            Rule("graph.attachments.list", "https", ms, "GET", rf"{m}/messages/{GRAPH_ID}/attachments",
+                 query_check=_graph_attachment_query),
+            Rule("graph.messages.createReply", "https", ms, "POST", rf"{m}/messages/{GRAPH_ID}/createReply",
+                 body_check=_graph_reply_body),
+        ]
     if ms_tenant:
         rules.append(Rule("microsoft.oauth.refresh", "https", "login.microsoftonline.com", "POST",
                           rf"/{re.escape(ms_tenant)}/oauth2/v2\.0/token"))
-    rules.append(Rule("todoist.sync.item_add", "https", "api.todoist.com", "POST", r"/api/v1/sync",
-                      body_check=_todoist_sync_body(str(todoist_project_id))))
+    return rules + _common_rules(todoist_project_id, llm_base_url, ledger_s3)
+
+
+def _gmail_rules(g: str, gm: str, label: str) -> list[Rule]:
+    return [
+        Rule("gmail.messages.list", "https", gm, "GET", rf"{g}/messages", query_check=_gmail_list_query(label)),
+        Rule("gmail.messages.get", "https", gm, "GET", rf"{g}/messages/{ID}"),
+        Rule("gmail.threads.get", "https", gm, "GET", rf"{g}/threads/{ID}"),
+        Rule("gmail.drafts.create", "https", gm, "POST", rf"{g}/drafts", body_check=_gmail_draft_body),
+        Rule("google.oauth.refresh", "https", "oauth2.googleapis.com", "POST", r"/token"),
+    ]
+
+
+def _common_rules(todoist_project_id: str, llm_base_url: str,
+                  ledger_s3: tuple[str, str] | None) -> list[Rule]:
+    rules = [Rule("todoist.sync.item_add", "https", "api.todoist.com", "POST", r"/api/v1/sync",
+                  body_check=_todoist_sync_body(str(todoist_project_id)))]
     llm = urlsplit(llm_base_url)
     rules.append(Rule("llm.chat.completions", llm.scheme, llm.netloc, "POST",
                       re.escape(llm.path.rstrip("/")) + r"/chat/completions"))

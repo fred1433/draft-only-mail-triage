@@ -11,6 +11,7 @@ Run it under the machine's local-model guard (one local model at a time)."""
 from __future__ import annotations
 
 import argparse
+import sys
 import datetime as dt
 import json
 import time
@@ -21,7 +22,7 @@ from urllib.parse import urlsplit
 
 from triage.auth import StaticToken
 from triage.job import prepare
-from triage.llm import LLMClient
+from triage.llm import LLMClient, LLMUnavailable
 from triage.providers.gmail import GmailProvider
 from triage_fakes import FakeGmail, prompt_hash
 from triage_fakes.world import CORPUS, ROOT, build_world
@@ -51,7 +52,12 @@ def main() -> int:
             continue
         messages, detected, target = prepare(msg)
         t0 = time.monotonic()
-        output = llm.complete(messages)
+        try:
+            output = llm.complete(messages)
+        except LLMUnavailable as exc:
+            print(f"model endpoint {a.base_url} did not answer ({exc}); start Ollama serving {a.model} "
+                  "and run again. Nothing was overwritten for this email.", file=sys.stderr)
+            return 3
         took = round(time.monotonic() - t0, 1)
         record = {
             "email": f"corpus/{name}",

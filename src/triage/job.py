@@ -2,12 +2,17 @@
 
 Order of operations for each message (ADR 0001):
   claim -> read ledger -> reconcile with the provider -> ask the model -> check the
-  answer -> draft (once) -> tasks (each once) -> done.
+  answer -> record the task plan -> draft (once) -> tasks (each once) -> done.
+A resumed message (task plan already recorded) never asks the model again: it finds its
+draft, then creates the tasks still missing from the recorded plan.
 Anything the code cannot vouch for becomes ``needs_human``: no draft, one task
 "Manual reply needed" carrying the thread link and nothing else.
+A provider error on one message sets that message aside for the next hour and is
+journaled; the other messages are still handled.
 """
 from __future__ import annotations
 
+import json
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -17,7 +22,7 @@ from triage.checks import detect_language, parse_reply, review, screen_injection
 from triage.ledger import Ledger, LedgerUnavailable, ledger_key
 from triage.llm import LLMClient, LLMUnavailable, build_messages, source_text
 from triage.log import JsonlLog
-from triage.providers.base import Found, InboundMessage, MailProvider
+from triage.providers.base import Found, InboundMessage, MailProvider, ProviderError
 from triage.tasks import TaskFailed, TaskSink
 from triage.transport import TransportFailure, WriteOutcomeUnknown
 
@@ -34,6 +39,8 @@ class RunSummary:
     needs_human: int = 0
     skipped: int = 0
     retry_later: int = 0
+    failed: int = 0
+    truncated: bool = False
     exit_code: int = 0
     outcomes: dict[str, str] = field(default_factory=dict)   # key prefix -> outcome code
 
@@ -76,6 +83,13 @@ class Job:
             self.log.event("auth_failed", run=self.run_id, status="stopped")
             s.exit_code = 5
             return s
+        except ProviderError as exc:
+            self.log.event("list_failed", run=self.run_id, reason=_code(exc), status="stopped")
+            s.exit_code = 4
+            return s
+        s.truncated = bool(getattr(self.provider, "truncated", False))
+        self.log.event("listed", run=self.run_id, count=len(ids),
+                       status="truncated" if s.truncated else "complete")
         for message_id in ids:
             key = ledger_key(self.provider.name, self.provider.mailbox, message_id)
             s.seen += 1
@@ -89,6 +103,12 @@ class Job:
                     outcome = self._handle(message_id, key, s)
                 finally:
                     self.ledger.release(key, self.run_id)
+            except ProviderError as exc:
+                # One message the provider will not serve does not block the mailbox.
+                self.log.event("message_failed", run=self.run_id, key=key, reason=_code(exc), status="next_hour")
+                s.failed += 1
+                s.outcomes[key[:16]] = "failed_next_hour"
+                continue
             except LedgerUnavailable:
                 self.log.event("ledger_unavailable", run=self.run_id, key=key, status="stopped")
                 s.exit_code = 3
@@ -98,7 +118,14 @@ class Job:
                 s.exit_code = 5 if isinstance(exc, AuthFailed) else 4
                 return s
             s.outcomes[key[:16]] = outcome
+        backlog = s.failed + s.retry_later
+        if backlog or s.truncated:
+            self.log.event("backlog", run=self.run_id, count=backlog,
+                           status="truncated" if s.truncated else "next_hour")
+        if s.failed or s.truncated:
+            s.exit_code = 6          # partial run: the alert on a non-zero exit sees it
         self.log.event("run_finished", run=self.run_id, count=s.seen, n=s.drafts,
+                       status="partial" if s.exit_code == 6 else "complete",
                        ms=int((time.monotonic() - started) * 1000))
         return s
 
@@ -117,6 +144,10 @@ class Job:
             return "already_needs_human"
 
         msg = self.provider.fetch(message_id)
+        plan = _plan(state)
+        if plan is not None:
+            return self._resume(msg, key, state, plan, s)
+
         draft_done = "draft_created" in state
         if not draft_done:
             found = self.provider.reconcile(msg, key)
@@ -151,9 +182,19 @@ class Job:
         if detected == "other":
             self.log.event("language_fallback", run=self.run_id, key=key, lang="en")
 
+        # The plan is durable before the first external write: a resumed run uses it and
+        # never asks the model again, and an interrupted draft is never written blindly.
+        titles = [t.title for t in reply.proposed_tasks]
+        self.ledger.record(key, "task_plan", ref=json.dumps(titles, ensure_ascii=False), run_id=self.run_id)
+        self.log.event("plan_recorded", run=self.run_id, key=key, count=len(titles))
         if not draft_done:
             try:
                 draft_id = self.provider.create_draft(msg, reply.draft_body, target, key)
+            except ProviderError:
+                # Refused by the provider: nothing was written. Drop the plan so the next
+                # hour starts this message afresh, then let run() journal it.
+                self.ledger.record(key, "task_plan", ref="", run_id=self.run_id)
+                raise
             except WriteOutcomeUnknown:
                 # The draft may exist. Look before anything else; never recreate blindly.
                 found = self.provider.reconcile(msg, key)
@@ -163,15 +204,33 @@ class Job:
             self.ledger.record(key, "draft_created", ref=draft_id, run_id=self.run_id)
             self.log.event("draft_created", run=self.run_id, key=key, lang=target)
             s.drafts += 1
+        return self._tasks(msg, key, titles, s)
 
-        planned = [t.title for t in reply.proposed_tasks]
-        recorded = [int(k.split(":")[1]) for k in state if k.startswith("tasks_planned:")]
-        if recorded:
-            planned = planned[:recorded[0]]      # a resumed run never adds tasks to the first plan
-        else:
-            self.ledger.record(key, f"tasks_planned:{len(planned)}", run_id=self.run_id)
-            state = self.ledger.get(key)
-        for n, title in enumerate(planned):
+    def _resume(self, msg: InboundMessage, key: str, state: dict, titles: list[str], s: RunSummary) -> str:
+        """A plan was recorded by an earlier run. No model call."""
+        self.log.event("resumed", run=self.run_id, key=key, count=len(titles))
+        if "draft_created" not in state:
+            # The earlier run stopped between recording its plan and recording its draft.
+            found = self.provider.reconcile(msg, key)
+            if found in (Found.OUR_DRAFT, Found.OUR_DRAFT_SENT):
+                self.ledger.record(key, "draft_created", ref=found.value, run_id=self.run_id)
+                self.log.event("draft_reconciled", run=self.run_id, key=key, status=found.value)
+            elif found is Found.HUMAN_REPLIED:
+                self.ledger.record(key, "human_replied", run_id=self.run_id)
+                self.ledger.record(key, "task_plan", ref="", run_id=self.run_id)
+                self.log.event("human_replied", run=self.run_id, key=key)
+                s.skipped += 1
+                return "human_replied"
+            else:
+                # Never written, or written and deleted by a person: the code cannot
+                # tell. A person decides; the draft is not written again.
+                self.ledger.record(key, "task_plan", ref="", run_id=self.run_id)
+                return self._needs_human(msg, key, "draft_outcome_unknown", s)
+        return self._tasks(msg, key, titles, s)
+
+    def _tasks(self, msg: InboundMessage, key: str, titles: list[str], s: RunSummary) -> str:
+        state = self.ledger.get(key)
+        for n, title in enumerate(titles):
             if f"task_created:{n}" in state:
                 continue
             try:
@@ -184,6 +243,7 @@ class Job:
             self.log.event("task_created", run=self.run_id, key=key, n=n)
             s.tasks += 1
         self.ledger.record(key, "done", run_id=self.run_id)
+        self.ledger.record(key, "task_plan", ref="", run_id=self.run_id)     # titles leave the ledger
         return "done"
 
     def _needs_human(self, msg: InboundMessage, key: str, reason: str, s: RunSummary, count: int = 1) -> str:
@@ -203,6 +263,18 @@ class Job:
         self.log.event("task_created", run=self.run_id, key=key, n=0, rule="manual")
         s.tasks += 1
         return f"needs_human:{reason}" if reason else "needs_human"
+
+
+def _plan(state: dict) -> list[str] | None:
+    """The recorded task titles, or None when no plan is pending."""
+    ref = (state.get("task_plan") or {}).get("ref", "")
+    if not ref:
+        return None
+    try:
+        titles = json.loads(ref)
+    except ValueError:
+        return None
+    return [str(t) for t in titles] if isinstance(titles, list) else None
 
 
 def _code(exc: Exception) -> str:

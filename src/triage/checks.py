@@ -92,9 +92,21 @@ def _figures(text: str) -> set[str]:
     return {m.lstrip("0") or "0" for m in re.findall(r"\d+", _norm(text))}
 
 
+# English words that are also months: counted as dates only next to a day number.
+_AMBIGUOUS = {"may", "march"}
+
+
 def _dates(text: str) -> set[str]:
-    low = text.lower()
-    return {m for m in _MONTHS if re.search(rf"\b{m}\b", low)}
+    low = _norm(text.lower())
+    found = set()
+    for m in _MONTHS:
+        if m in _AMBIGUOUS:
+            pattern = rf"\b\d{{1,2}}(?:st|nd|rd|th|\.)?\s+(?:of\s+)?{m}\b|\b{m}\s+\d{{1,2}}\b"
+        else:
+            pattern = rf"\b{m}\b"
+        if re.search(pattern, low):
+            found.add(m)
+    return found
 
 
 def _names(text: str) -> set[str]:

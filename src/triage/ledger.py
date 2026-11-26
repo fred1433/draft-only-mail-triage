@@ -3,9 +3,12 @@
 A Serverless Job starts with an empty disk every hour, and without gmail.modify the job
 cannot mark a message as processed. The ledger is what remembers. Key =
 sha256(provider|mailbox|message_id). One state per external effect:
-``draft_created``, ``tasks_planned:<k>``, ``task_created:<n>``, ``needs_human``,
+``task_plan``, ``draft_created``, ``task_created:<n>``, ``needs_human``,
 ``human_replied``, ``done``. Values are opaque references (draft id, task id, reason
-code), never text from the email or the model.
+code), never text from the email. One exception, declared: ``task_plan`` holds the
+accepted task titles (the short model-written text that goes to Todoist) from just
+before the draft is written until the tasks exist, so that a resumed run never asks the
+model again. It is emptied when the message is done.
 
 Two backends: a local file backend (the demo and the tests) and an S3-compatible backend
 for Scaleway Object Storage in fr-par (written and tested against a fake; no bucket is
@@ -48,7 +51,7 @@ class Ledger(Protocol):
 
 
 class FileLedger:
-    """Atomic writes with os.replace; claims with O_EXCL and an expiry."""
+    """Atomic writes with os.replace; every claim decided under one exclusive file lock."""
 
     def __init__(self, root: str | Path):
         self.root = Path(root)
@@ -87,36 +90,51 @@ class FileLedger:
             with self._locked():
                 state = self.get(key)
                 state[effect] = {"at": _now(), "ref": ref, "run": run_id}
-                tmp = self._entry(key).with_suffix(".tmp")
+                tmp = self._entry(key).with_name(f"{key}.{os.getpid()}.tmp")
                 tmp.write_text(json.dumps(state, sort_keys=True))
                 os.replace(tmp, self._entry(key))
         except OSError as exc:
             raise LedgerUnavailable(type(exc).__name__) from None
 
+    def _write(self, path: Path, data: dict) -> None:
+        """Atomic: a reader sees the old file or the new one, never half of one."""
+        tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(data))
+        os.replace(tmp, path)
+
     def claim(self, key: str, run_id: str, ttl_s: int = 900) -> bool:
+        """Read, decide and write under one exclusive lock. An unreadable claim counts
+        as held until its file is older than the ttl."""
         path = self.root / "claims" / f"{key}.json"
-        body = json.dumps({"run": run_id, "until": time.time() + ttl_s, "released": False})
+        body = {"run": run_id, "until": time.time() + ttl_s, "released": False}
         try:
-            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            with os.fdopen(fd, "w") as fh:
-                fh.write(body)
-            return True
-        except FileExistsError:
-            pass
-        with self._locked():
-            current = json.loads(path.read_text() or "{}")
-            if current.get("released") or current.get("until", 0) < time.time():
-                path.write_text(body)
-                return True
-            return False
+            with self._locked():
+                try:
+                    current = json.loads(path.read_text())
+                except FileNotFoundError:
+                    current = None
+                except ValueError:
+                    current = {"until": path.stat().st_mtime + ttl_s}
+                if current is None or current.get("released") or current.get("until", 0) < time.time():
+                    self._write(path, body)
+                    return True
+                return False
+        except OSError as exc:
+            raise LedgerUnavailable(type(exc).__name__) from None
 
     def release(self, key: str, run_id: str) -> None:
         path = self.root / "claims" / f"{key}.json"
-        with self._locked():
-            current = json.loads(path.read_text() or "{}")
-            if current.get("run") == run_id:
-                current["released"] = True
-                path.write_text(json.dumps(current))
+        try:
+            with self._locked():
+                try:
+                    current = json.loads(path.read_text())
+                except (FileNotFoundError, ValueError):
+                    return
+                if current.get("run") == run_id:
+                    current["released"] = True
+                    self._write(path, current)
+        except OSError as exc:
+            raise LedgerUnavailable(type(exc).__name__) from None
 
 
 class S3Ledger:

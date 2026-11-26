@@ -1,15 +1,18 @@
 """Microsoft Graph, delegated Mail.ReadWrite + offline_access, no Mail.Send.
 
-Microsoft refuses send and forward for this token. Mail.ReadWrite would allow deleting
-and touching every folder: the allowlist keeps the job to one folder, reads, and
-createReply."""
+Microsoft refuses send and forward for this token. Mail.ReadWrite allows creating,
+reading, updating and deleting mail in every folder. The allowlist narrows that: it
+lists messages only in the configured folder (plus Drafts and Sent Items, to recognise
+the job's own draft), reads a message by id, lists attachment metadata, and calls
+createReply. A read by message id is not tied to a folder at the transport: the ids come
+from the folder listing, and the token could read any message by id."""
 from __future__ import annotations
 
 from datetime import datetime
 from urllib.parse import quote
 
 from triage.mime import html_body
-from triage.providers.base import Attachment, Found, InboundMessage
+from triage.providers.base import Attachment, Found, InboundMessage, ProviderError
 from triage.transport import HttpClient
 
 API = "https://graph.microsoft.com/v1.0/me"
@@ -17,8 +20,10 @@ API = "https://graph.microsoft.com/v1.0/me"
 MARKER_PROP = "String {00020329-0000-0000-C000-000000000046} Name X-Triage-Key"
 
 
-class ProviderError(Exception):
-    pass
+PAGE_SIZE = 50
+MAX_PAGES = 40            # 2,000 messages a run; beyond that the run says so (truncated)
+
+__all__ = ["GraphProvider", "ProviderError"]
 
 
 def _ms(iso: str) -> int:
@@ -30,18 +35,33 @@ class GraphProvider:
 
     def __init__(self, http: HttpClient, folder_id: str, token: callable):
         self.http, self.mailbox, self._token = http, folder_id, token
+        self.truncated = False
 
     def _get(self, path: str, params=None, headers=None) -> dict:
         h = {"Authorization": f"Bearer {self._token()}", **(headers or {})}
-        r = self.http.request("GET", API + path, params=params, headers=h)
+        url = path if path.startswith("https://") else API + path      # @odata.nextLink is absolute
+        r = self.http.request("GET", url, params=params, headers=h)
         if not r.ok:
             raise ProviderError(f"graph GET {r.status}")
         return r.json()
 
     def list_new(self) -> list[str]:
+        """Every page of the folder (following @odata.nextLink), oldest first, up to
+        MAX_PAGES pages. The next link goes through the same allowlist as any request."""
+        ids = []
+        self.truncated = False
         data = self._get(f"/mailFolders/{quote(self.mailbox, safe='')}/messages",
-                         {"$select": "id", "$top": "50", "$orderby": "receivedDateTime desc"})
-        return [m["id"] for m in data.get("value", [])]
+                         {"$select": "id", "$top": str(PAGE_SIZE), "$orderby": "receivedDateTime desc"})
+        for page in range(MAX_PAGES):
+            ids += [m["id"] for m in data.get("value", [])]
+            nxt = data.get("@odata.nextLink")
+            if not nxt:
+                break
+            if page == MAX_PAGES - 1:
+                self.truncated = True
+                break
+            data = self._get(nxt)
+        return list(reversed(ids))
 
     def fetch(self, message_id: str) -> InboundMessage:
         m = self._get(
@@ -67,7 +87,7 @@ class GraphProvider:
     def _conversation(self, folder: str, conversation_id: str) -> list[dict]:
         data = self._get(f"/mailFolders/{folder}/messages", {
             "$filter": f"conversationId eq '{conversation_id}'",
-            "$select": "id,sentDateTime,isDraft",
+            "$select": "id,sentDateTime,isDraft", "$top": "50",
             "$expand": f"singleValueExtendedProperties($filter=id eq '{MARKER_PROP}')",
         })
         return data.get("value", [])

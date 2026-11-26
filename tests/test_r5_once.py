@@ -1,11 +1,12 @@
 """R5: each email handled once, across hours, containers, crashes and concurrent runs."""
 from __future__ import annotations
 
+import re
 import threading
 
 import pytest
 
-from tests.helpers import drafts, inbound_ids, make_world
+from tests.helpers import CANNED, drafts, inbound_ids, make_world
 from triage.ledger import FileLedger, LedgerUnavailable, S3Ledger, ledger_key
 from triage.transport import build_client, build_rules
 from triage_fakes import FakeCloud, FakeS3, Fault
@@ -32,26 +33,74 @@ def test_next_hour_in_a_new_container_changes_nothing(provider, tmp_path, proof)
     proof.line(f"{provider} hour 2 (new container): drafts +{s2.drafts}, tasks +{s2.tasks}, skipped={s2.skipped}")
 
 
+RACES = 200
+
+
 @pytest.mark.evidence("R5", control="triage.ledger:FileLedger.claim")
 def test_two_concurrent_runs_make_one_draft_per_email(tmp_path, proof):
-    """Two runs started at the same instant on the same mailbox: one draft per email, never two."""
-    world = make_world()
-    barrier = threading.Barrier(2)
-    results = []
+    """Two runs started at the same instant on the same mailbox, 200 times over: one draft per email, never two."""
+    duplicates, total_drafts = 0, 0
+    for i in range(RACES):
+        world = make_world()
+        root = tmp_path / f"race-{i}"
+        barrier = threading.Barrier(2)
+        results, errors = [], []
 
-    def go(name):
-        job = world.job(FileLedger(tmp_path), run_id=name)
-        barrier.wait()
-        results.append(job.run())
-    threads = [threading.Thread(target=go, args=(n,)) for n in ("run-a", "run-b")]
-    [t.start() for t in threads]
-    [t.join() for t in threads]
-    per_thread = {}
-    for m in world.gmail.draft_messages():
-        per_thread[m.thread_id] = per_thread.get(m.thread_id, 0) + 1
-    assert all(v == 1 for v in per_thread.values())
-    assert sum(r.drafts for r in results) == len(per_thread)
-    proof.line(f"run-a drafts={results[0].drafts} run-b drafts={results[1].drafts}; drafts per thread: {sorted(per_thread.values())}")
+        def go(name):
+            job = world.job(FileLedger(root), run_id=name)
+            barrier.wait()
+            try:
+                results.append(job.run())
+            except Exception as exc:          # a crash in either run fails the test below
+                errors.append(repr(exc))
+        threads = [threading.Thread(target=go, args=(n,)) for n in ("run-a", "run-b")]
+        [t.start() for t in threads]
+        [t.join() for t in threads]
+        assert not errors, errors
+        per_thread = {}
+        for m in world.gmail.draft_messages():
+            per_thread[m.thread_id] = per_thread.get(m.thread_id, 0) + 1
+        duplicates += sum(v - 1 for v in per_thread.values())
+        assert sum(r.drafts for r in results) == len(per_thread)
+        total_drafts += len(per_thread)
+    assert duplicates == 0
+    proof.line(f"{RACES} races of two runs on the same mailbox: duplicate drafts={duplicates}, crashes=0")
+    proof.line(f"drafts per race: {total_drafts // RACES} (one per email that gets a draft)")
+
+
+@pytest.mark.evidence("R5", control="triage.ledger:FileLedger.claim")
+def test_claims_have_exactly_one_winner_under_contention(tmp_path, proof):
+    """Eight threads claim the same message at once, 200 times, with the write window widened: exactly one wins each time."""
+    import os
+    import time as _time
+    import triage.ledger as L
+    real_replace = os.replace
+
+    def slow_replace(a, b):                    # widen the window between read and write
+        _time.sleep(0.0005)
+        return real_replace(a, b)
+    L.os.replace = slow_replace
+    try:
+        bad = 0
+        for i in range(RACES):
+            root = tmp_path / f"c-{i}"
+            FileLedger(root).ping()
+            barrier = threading.Barrier(8)
+            wins = []
+
+            def go(n):
+                led = FileLedger(root)
+                barrier.wait()
+                if led.claim("k", f"run-{n}"):
+                    wins.append(n)
+            ts = [threading.Thread(target=go, args=(n,)) for n in range(8)]
+            [t.start() for t in ts]
+            [t.join() for t in ts]
+            bad += len(wins) != 1
+    finally:
+        L.os.replace = real_replace
+    assert bad == 0
+    proof.line(f"{RACES} rounds x 8 claimers, widened write window: rounds with other than one winner = {bad}")
 
 
 @pytest.mark.evidence("R5", control=J)
@@ -92,6 +141,93 @@ def test_todoist_failure_then_resume_creates_the_task_not_a_second_draft(tmp_pat
     assert s2.drafts == 0 and len(world.gmail.draft_messages()) == 1
     assert len(world.todoist.tasks) == 2
     proof.line(f"hour 1: drafts=1 tasks=0 (todoist 503) -> hour 2: drafts +{s2.drafts}, tasks +{s2.tasks}")
+
+
+@pytest.mark.evidence("R5", control="triage.job:Job._resume")
+def test_resume_uses_the_recorded_plan_and_never_asks_the_model_again(tmp_path, proof):
+    """Todoist fails after the draft; next hour the model would answer differently: it is not asked, the first plan's tasks are created."""
+    import json as _json
+    calls = {"n": 0}
+
+    def changing(messages):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _json.dumps(CANNED[DE], ensure_ascii=False)
+        return _json.dumps(dict(CANNED[DE], proposed_tasks=[], draft_body=CANNED[DE]["draft_body"] + " 3. Dezember"),
+                           ensure_ascii=False)
+    world = make_world(overrides={DE: changing}, only=("00_de_previous_outbound.eml", "02_de_audit_followup.eml"))
+    world.cloud.inject(Fault("POST", "api.todoist.com", r"/api/v1/sync", "http_503"))
+    world.job(FileLedger(tmp_path), run_id="hour1").run()
+    s2 = world.job(FileLedger(tmp_path), run_id="hour2").run()
+    titles = [t["content"] for t in world.todoist.tasks.values()]
+    assert calls["n"] == 1
+    assert titles == [t["title"] for t in CANNED[DE]["proposed_tasks"]]
+    assert len(world.gmail.draft_messages()) == 1 and s2.needs_human == 0
+    proof.line(f"model calls over two hours: {calls['n']}; hour 2 tasks: {len(titles)} from the recorded plan; drafts: 1")
+
+
+class CrashAfterDraft(FileLedger):
+    """The process dies after the provider wrote the draft, before the ledger heard of it."""
+    def record(self, key, effect, ref="", run_id=""):
+        if effect == "draft_created":
+            raise KeyboardInterrupt("container stopped")
+        return super().record(key, effect, ref, run_id)
+
+
+@pytest.mark.evidence("R5", control="triage.job:Job._resume")
+def test_interrupted_draft_deleted_by_a_person_is_not_written_again(tmp_path, proof):
+    """Run stopped between the draft and its ledger entry, then a person deleted the draft: no second draft, a person decides."""
+    world = make_world(only=("00_de_previous_outbound.eml", "02_de_audit_followup.eml"))
+    with pytest.raises(KeyboardInterrupt):
+        world.job(CrashAfterDraft(tmp_path), run_id="hour1").run()
+    (key,) = [p.stem for p in (tmp_path / "claims").glob("*.json")]
+    FileLedger(tmp_path).release(key, "hour1")      # the stopped run's claim (its ttl would expire anyway)
+    world.gmail.human_delete_draft(next(iter(world.gmail.drafts)))
+    s2 = world.job(FileLedger(tmp_path), run_id="hour2").run()
+    assert s2.drafts == 0 and len(world.gmail.draft_messages()) == 0
+    assert [t["content"] for t in world.todoist.tasks.values()] == ["Manual reply needed"]
+    reason = [l["reason"] for l in world.log_lines() if l["event"] == "needs_human"][0]
+    proof.line(f"hour 1 stopped after the draft; draft deleted by a person; hour 2: drafts +{s2.drafts}, needs_human:{reason}")
+
+
+@pytest.mark.evidence("R5", control="triage.job:Job.run")
+@pytest.mark.parametrize("provider", ["gmail", "graph"])
+def test_one_failing_message_does_not_block_the_mailbox(provider, tmp_path, proof):
+    """One message the provider refuses to serve: the others are handled, the failure is journaled, exit code 6, next hour it is handled."""
+    world = make_world(provider)
+    ids = inbound_ids(world)
+    victim = ids["Training for our new board secretary"]
+    host = "gmail.googleapis.com" if provider == "gmail" else "graph.microsoft.com"
+    world.cloud.inject(Fault("GET", host, rf".*/messages/{re.escape(victim)}", "http_503", times=1))
+    s1 = world.job(FileLedger(tmp_path), run_id="hour1").run()
+    events = [l for l in world.log_lines() if l["event"] in ("message_failed", "backlog")]
+    assert s1.exit_code == 6 and s1.failed == 1 and s1.drafts >= 1
+    assert [e["event"] for e in events] == ["message_failed", "backlog"]
+    s2 = world.job(FileLedger(tmp_path), run_id="hour2").run()
+    assert s2.exit_code == 0 and s2.failed == 0 and s2.drafts == 1
+    proof.line(f"{provider} hour 1: failed=1 (journaled message_failed, backlog count={events[1]['count']}), drafts={s1.drafts}, exit={s1.exit_code}")
+    proof.line(f"{provider} hour 2: the set-aside message is handled, drafts +{s2.drafts}, exit={s2.exit_code}")
+
+
+@pytest.mark.evidence("R5", control="triage.providers.gmail:GmailProvider.list_new")
+@pytest.mark.parametrize("provider", ["gmail", "graph"])
+def test_every_page_of_the_folder_is_read(provider, tmp_path, proof):
+    """150 messages in the folder, more than one page: every one is handled in the same hour."""
+    world = make_world(provider, only=("01_en_board_secretary.eml",))
+    raw = (world_root() / "corpus" / "01_en_board_secretary.eml").read_bytes()
+    for i in range(149):
+        eml = raw.replace(b"Message-ID: <", f"Message-ID: <n{i}-".encode(), 1)
+        world.gmail.load_eml(eml)
+        world.graph.load_eml(eml)
+    s = world.job(FileLedger(tmp_path)).run()
+    pages = sum(1 for e in world.recorder.emitted if e.method == "GET" and e.path.endswith("/messages"))
+    assert s.seen == 150 and s.drafts == 150 and len(drafts(world)) == 150 and pages >= 2
+    proof.line(f"{provider}: messages in folder=150, listed={s.seen}, drafts={s.drafts}, list pages={pages}")
+
+
+def world_root():
+    from triage_fakes.world import ROOT
+    return ROOT
 
 
 @pytest.mark.evidence("R5", control="triage.tasks:command_uuid")
@@ -184,7 +320,8 @@ def test_s3_ledger_conditional_claims(proof):
     proof.line("If-None-Match claim: run-a True, run-b False; after release: run-b True; outage -> LedgerUnavailable")
 
 
-def test_revoked_access_stops_the_run_cleanly(tmp_path):
+@pytest.mark.evidence("R5", control="triage.job:Job.run")
+def test_revoked_access_stops_the_run_cleanly(tmp_path, proof):
     """Refresh refused (access revoked): the run stops with exit code 5 and writes nothing."""
     from triage.auth import AuthFailed
     world = make_world()
@@ -196,6 +333,7 @@ def test_revoked_access_stops_the_run_cleanly(tmp_path):
     s = job.run()
     assert s.exit_code == 5 and not world.todoist.tasks and not drafts(world)
     assert [l["event"] for l in world.log_lines()][-1] == "auth_failed"
+    proof.line(f"refresh refused -> auth_failed, exit_code={s.exit_code}, drafts=0, tasks=0")
 
 
 def test_partial_configuration_is_refused():

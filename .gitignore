@@ -13,3 +13,4 @@ site/
 worker.js
 wrangler.toml
 .wrangler/
+build/

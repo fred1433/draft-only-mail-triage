@@ -25,8 +25,11 @@ Delete or disable the trigger: `terraform destroy -target=scaleway_job_trigger.h
 
 ## Stop a run in progress
 
-Scaleway console, Serverless Jobs, the job, Job runs: stop the running one. A stopped run can leave a message half processed: the next
-run reconciles it (ADR 0001), it never writes a second draft.
+Scaleway console, Serverless Jobs, the job, Job runs: stop the running one. A stopped
+run can leave a message half processed. The next run reconciles it (ADR 0001): if its
+draft is in the thread, it records it and creates the missing tasks from the recorded
+plan; if the draft is not there (never written, or deleted by a person since), it does
+not write one and the message goes to a person (`draft_outcome_unknown`).
 
 ## Detect a missed run, a missing secret, a revoked access
 
@@ -38,6 +41,9 @@ run reconciles it (ADR 0001), it never writes a second draft.
   exit code. Alert on any run with a non-zero exit code.
 - **Ledger unavailable.** `ledger_unavailable` with exit code 3, before any read or
   write.
+- **One message failing, or more than 2,000 waiting.** The run handles the others, writes
+  `message_failed` (key prefix and reason code) and `backlog`, and ends with exit code 6.
+  The set-aside message is tried again next hour.
 
 ## Resume a message marked `needs_human`
 
@@ -69,4 +75,4 @@ refuses a tag), or update the job definition's image in the console with
 - OAuth consents for the real mailbox and Todoist, and the Google app status (step 2).
 - Serverless inference (Paris today, Europe committed) or Dedicated Deployment (single
   region, paid).
-- Confrontation with the existing code skeleton and control checklist.
+- A comparison with any code and setup notes that already exist for this job.

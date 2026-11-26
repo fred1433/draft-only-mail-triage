@@ -109,7 +109,10 @@ def test_the_faithful_sentence_passes(proof):
     """Control: a reply that only uses the email's own names, dates and figures is accepted."""
     ok = "Sehr geehrte Frau Dr. Albers,\n\nwir bestätigen, dass der Entwurf bis zum 2. Dezember vorliegt, vor der Sitzung am 9. Dezember."
     assert unsupported(ok, source_text(SOURCE)) == []
+    for plain in ("Thank you. We may need a little more time.", "We will march ahead with the review."):
+        assert unsupported(plain, "Please review the charter.") == [], plain
     proof.line("faithful sentence: no reason raised")
+    proof.line("'may' and 'march' as ordinary words: no reason raised")
 
 
 @pytest.mark.evidence("R7", control="triage.llm:_untrusted")

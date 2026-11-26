@@ -6,14 +6,14 @@ import re
 from email.utils import parseaddr
 
 from triage.mime import MARKER_HEADER, build_reply
-from triage.providers.base import Attachment, Found, InboundMessage
+from triage.providers.base import Attachment, Found, InboundMessage, ProviderError
 from triage.transport import HttpClient
 
 API = "https://gmail.googleapis.com/gmail/v1/users/me"
+PAGE_SIZE = 100
+MAX_PAGES = 20            # 2,000 messages a run; beyond that the run says so (truncated)
 
-
-class ProviderError(Exception):
-    pass
+__all__ = ["GmailProvider", "ProviderError"]
 
 
 def _b64(data: str) -> bytes:
@@ -31,6 +31,7 @@ class GmailProvider:
 
     def __init__(self, http: HttpClient, label_id: str, token: callable):
         self.http, self.mailbox, self._token = http, label_id, token
+        self.truncated = False
 
     def _get(self, path: str, params=None) -> dict:
         r = self.http.request("GET", API + path, params=params,
@@ -40,8 +41,21 @@ class GmailProvider:
         return r.json()
 
     def list_new(self) -> list[str]:
-        data = self._get("/messages", {"labelIds": self.mailbox, "maxResults": "50", "q": "newer_than:7d"})
-        return [m["id"] for m in data.get("messages", [])]
+        """Every page of the label, oldest first, up to MAX_PAGES pages."""
+        ids, token = [], None
+        self.truncated = False
+        for _ in range(MAX_PAGES):
+            params = {"labelIds": self.mailbox, "maxResults": str(PAGE_SIZE), "q": "newer_than:7d"}
+            if token:
+                params["pageToken"] = token
+            data = self._get("/messages", params)
+            ids += [m["id"] for m in data.get("messages", [])]
+            token = data.get("nextPageToken")
+            if not token:
+                break
+        else:
+            self.truncated = True
+        return list(reversed(ids))
 
     def fetch(self, message_id: str) -> InboundMessage:
         m = self._get(f"/messages/{message_id}", {"format": "full"})

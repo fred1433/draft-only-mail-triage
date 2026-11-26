@@ -71,7 +71,8 @@ def build_world(script: Callable[[list[dict]], str], *, provider: str = "gmail",
     else:
         load_corpus(corpus, gmail, graph)
     recorder = RecordingTransport(cloud)
-    rules = build_rules(todoist_project_id=PROJECT_ID, llm_base_url=llm_base_url)
+    rules = build_rules(todoist_project_id=PROJECT_ID, llm_base_url=llm_base_url,
+                        gmail_label=FakeGmail.LABEL, graph_folder=FakeGraph.FOLDER)
     http = build_client(rules, inner=recorder, timeout_s=600)
     return World(cloud, gmail, graph, todoist, model, recorder, http, llm_base_url, provider)
 

@@ -32,6 +32,11 @@ class InboundMessage:
     attachments: tuple[Attachment, ...] = field(default_factory=tuple)
 
 
+class ProviderError(Exception):
+    """The provider answered with an error for one request. Nothing was written by it.
+    The job sets that message aside for the next hour and goes on with the others."""
+
+
 class Found(enum.Enum):
     NOTHING = "nothing"
     OUR_DRAFT = "our_draft_present"       # a draft carrying our marker is in the thread
@@ -42,6 +47,8 @@ class Found(enum.Enum):
 class MailProvider(Protocol):
     name: str
     mailbox: str
+
+    truncated: bool                       # True when list_new stopped at its page ceiling
 
     def list_new(self) -> list[str]: ...
     def fetch(self, message_id: str) -> InboundMessage: ...

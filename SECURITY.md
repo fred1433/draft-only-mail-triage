@@ -1,9 +1,11 @@
 # Security model
 
-This job reads one mailbox folder, asks a model for a reply, saves that reply as a
-**draft** in the right thread, and adds proposed tasks to **one** Todoist project.
-Nothing leaves the mailbox without a person pressing Send. Nothing is deleted, moved or
-forwarded.
+This job lists one Gmail label or one Outlook folder, asks a model for a reply, saves
+that reply as a **draft** in the right thread, and adds proposed tasks to **one** Todoist
+project. Its only write to the mailbox is a draft: sending is left to a person, and the
+program has no route to delete, move or forward. The email text does leave the mailbox
+for the model endpoint, and short model-written task titles go to Todoist (see "Where
+data goes").
 
 That promise does not come from the OAuth scopes alone. For each connector below there
 are three fields: what the token really allows, what the code adds on top, and what is
@@ -18,24 +20,33 @@ left over. Read them together.
   message. `gmail.modify` and `https://mail.google.com/` are never requested (a test
   fails if they are).
 - **Restriction enforced by the code.** `src/triage/transport.py`, `AllowlistTransport`:
-  GET on labels, messages, threads and drafts; POST on `users/me/drafts` only, with a
-  body limited to `message.raw` + `message.threadId`. `drafts.send`, `messages.send`,
+  `messages.list` only with `labelIds` equal to the configured label (any other label,
+  or a search without it, is refused); GET on a message and on a thread by id; POST on
+  `users/me/drafts` only, with a body limited to `message.raw` + `message.threadId`.
+  A read by id is not tied to the label at the transport: the ids come from the label
+  listing, and the token itself can read any message. `drafts.send`, `messages.send`,
   the upload send endpoint, trash, modify and every DELETE raise `PolicyViolation`
   before a byte is emitted. Attachments are read as name, size and type from the message
   metadata; the attachment endpoint is not on the allowlist.
-- **Residual risk.** The token itself can send. Someone holding the refresh token, or
-  code running outside this program, could send mail. Without `gmail.modify` the job
-  cannot label a message as processed, so it relies on its ledger (ADR 0001).
+- **Residual risk.** The token itself can send and can read every message. Someone
+  holding the refresh token, or code running outside this program, could send mail.
+  Without `gmail.modify` the job cannot label a message as processed, so it relies on
+  its ledger (ADR 0001). The draft carries an opaque `X-Triage-Key` header (a digest, no
+  content); if the person sends the draft, that header reaches the correspondent and
+  shows that a tool prepared the draft.
 
 ### Microsoft Graph
 
 - **Rights the token really grants.** Delegated `Mail.ReadWrite` + `offline_access` on
   one signed-in mailbox, **without `Mail.Send`**: Microsoft refuses send and forward for
-  this token. But Microsoft's permission reference says `Mail.ReadWrite` allows the app
-  to "create, read, update, and delete mail", in every folder of that mailbox.
-- **Restriction enforced by the code.** GET on one configured folder, on the Drafts and
-  Sent Items folders (to recognise our own draft), on a message and on its attachment
-  list with `$select=name,size,contentType` (never `contentBytes`). POST on
+  this token. But Microsoft's permission reference describes delegated `Mail.ReadWrite`
+  as "Allows the app to create, read, update, and delete email in user mailboxes", every
+  folder included.
+- **Restriction enforced by the code.** Listing only in the configured folder and in
+  Drafts and Sent Items (to recognise our own draft): `mailFolders/inbox`, `archive` or
+  any other folder is refused. GET on a message by id and on its attachment list with
+  `$select=name,size,contentType` (never `contentBytes`); as with Gmail, a read by id
+  is not tied to the folder at the transport. POST on
   `messages/{id}/createReply` only, whose body may set the reply body and the triage
   marker and nothing else (no recipients). No `/send`, `/forward`, `/reply`,
   `createReplyAll`, `move`, PATCH or DELETE.
@@ -74,7 +85,19 @@ left over. Read them together.
   email, replies in the wrong language, repeats the email back, or flags an injection is
   refused: no draft, one task "Manual reply needed" with the thread link.
 - **Residual risk.** The email text and the draft go to the model provider. A reply can
-  still be wrong in ways no check sees; that is why it stays a draft.
+  still be wrong in ways no check sees: a promise nobody made, a confirmation the email
+  only asked for, a dropped title. The local examples show all three
+  (`examples/qwen3-8b/`). That is why it stays a draft.
+
+### Scaleway identities
+
+- **Rights.** The runtime identity has `SecretManagerSecretAccess`,
+  `ObjectStorageObjectsRead` and `ObjectStorageObjectsWrite`; the deployer has
+  `ContainerRegistryFullAccess` and `ServerlessJobsFullAccess`.
+- **Restriction.** Two identities, neither can do the other's work (`terraform/main.tf`).
+- **Residual risk.** Both policies are scoped to the **whole Scaleway project**, not to
+  the job's secrets, bucket or registry namespace. Use a project that holds this job
+  only.
 
 ## What the allowlist does not do
 
@@ -92,7 +115,14 @@ The job, its secrets (Secret Manager), its image registry and its ledger are dec
 models are "currently hosted in a secure data center located in Paris"; its commitment
 for serverless is Europe, and it recommends Dedicated Deployment (a paid option) to keep
 processing in a single region. Gmail, Microsoft 365 and Todoist are outside the
-Scaleway region: an EU-hosted model does not make the whole flow EU-only.
+Scaleway region: an EU-hosted model does not make the whole flow EU-only. Task titles
+are written by the model from the email, so they can carry its subject matter (a
+committee, a document name) to Todoist.
+
+The ledger holds no email text. Between a draft and its tasks it holds the accepted
+task titles (`task_plan`), so a resumed run never asks the model again; they are emptied
+when the message is done. With bucket versioning on, earlier versions keep them until
+the 180-day expiry.
 
 ## Logs
 

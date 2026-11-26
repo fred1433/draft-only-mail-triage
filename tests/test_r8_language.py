@@ -81,3 +81,14 @@ def test_the_fake_enforces_gmail_threading_rules(proof):
     r = world.gmail._create_draft({"message": {"raw": base64.urlsafe_b64encode(raw).decode(), "threadId": inbound.thread_id}})
     assert r.json()["message"]["threadId"] != inbound.thread_id
     proof.line("threadId alone, no References, other subject -> new thread (fake follows the documented rule)")
+
+
+@pytest.mark.evidence("R8", control="triage.mime:reply_subject")
+def test_reply_prefixes_are_not_doubled(proof):
+    """A subject already marked as a reply (English, German or Arabic prefix) keeps its single prefix."""
+    from triage.mime import reply_subject
+    cases = {"Re: Agenda": "Re: Agenda", "AW: Entwurf": "AW: Entwurf",
+             "رد: جدول الأعمال": "رد: جدول الأعمال", "Agenda": "Re: Agenda"}
+    for given, want in cases.items():
+        assert reply_subject(given) == want
+    proof.line("Re:, AW: and رد: kept once; a bare subject gets Re:")

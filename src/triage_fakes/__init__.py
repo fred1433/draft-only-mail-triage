@@ -148,8 +148,15 @@ class FakeGmail:
             label = q.get("labelIds")
             items = [m for m in self.messages.values() if not label or label in m.labels]
             items.sort(key=lambda m: -m.internal_ms)
-            return _json(200, {"messages": [{"id": m.id, "threadId": m.thread_id} for m in items],
-                               "resultSizeEstimate": len(items)})
+            # Pages like the real API: maxResults per page, nextPageToken while more remain.
+            size = int(q.get("maxResults", 100))
+            start = int(q.get("pageToken", "0") or 0)
+            page = items[start:start + size]
+            out = {"messages": [{"id": m.id, "threadId": m.thread_id} for m in page],
+                   "resultSizeEstimate": len(items)}
+            if start + size < len(items):
+                out["nextPageToken"] = str(start + size)
+            return _json(200, out)
         if m := re.fullmatch(rf"{base}/messages/([^/]+)", path):
             if method == "GET":
                 msg = self.messages.get(m.group(1))
@@ -282,7 +289,16 @@ class FakeGraph:
             if (f := q.get("$filter")) and (c := re.search(r"conversationId eq '([^']+)'", f)):
                 items = [x for x in items if x["conversationId"] == c.group(1)]
             items.sort(key=lambda x: x["receivedDateTime"], reverse=True)
-            return _json(200, {"value": [self._public(x, q.get("$select"), q.get("$expand")) for x in items]})
+            # Pages like the real API: $top per page, an absolute @odata.nextLink while more remain.
+            top = int(q.get("$top", 10))
+            skip = int(q.get("$skip", 0))
+            page = items[skip:skip + top]
+            out = {"value": [self._public(x, q.get("$select"), q.get("$expand")) for x in page]}
+            if skip + top < len(items):
+                nq = {k: v for k, v in q.multi_items() if k != "$skip"}
+                nq["$skip"] = str(skip + top)
+                out["@odata.nextLink"] = str(request.url.copy_with(params=nq))
+            return _json(200, out)
         if (m := re.fullmatch(rf"{base}/messages/([^/]+)", path)):
             msg = self.messages.get(m.group(1))
             if not msg:

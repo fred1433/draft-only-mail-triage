@@ -144,7 +144,8 @@ def test_todoist_token_is_kept_to_one_project_by_code(command, why, proof):
 ])
 def test_graph_create_reply_cannot_change_recipients(body, why, proof):
     """Mail.ReadWrite would let a draft be readdressed; the allowlist only lets createReply set the body and marker."""
-    http = build_client(build_rules(todoist_project_id=PROJECT_ID, llm_base_url="https://api.scaleway.ai/v1"),
+    http = build_client(build_rules(todoist_project_id=PROJECT_ID, llm_base_url="https://api.scaleway.ai/v1",
+                                    graph_folder="AAMkFolder="),
                         inner=FakeCloud([]))
     with pytest.raises(PolicyViolation) as exc:
         http.request("POST", "https://graph.microsoft.com/v1.0/me/messages/AAMk1/createReply", json_body=body,
@@ -185,3 +186,24 @@ def test_image_runs_as_non_root(proof):
     assert users and users[-1] not in ("root", "0") and users[-1].split(":")[0].isdigit()
     assert re.search(r"^FROM python:3\.12[\w.-]*@sha256:[0-9a-f]{64}", df, re.M)
     proof.line(f"USER {users[-1]}; base image pinned by digest")
+
+
+PINNED = [
+    ("https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages", {"$select": "id"}, "Graph inbox"),
+    ("https://graph.microsoft.com/v1.0/me/mailFolders/archive/messages", {"$select": "body"}, "Graph archive"),
+    ("https://gmail.googleapis.com/gmail/v1/users/me/messages", {"labelIds": "INBOX"}, "Gmail INBOX label"),
+    ("https://gmail.googleapis.com/gmail/v1/users/me/messages", {"q": "in:anywhere"}, "Gmail search, no label"),
+]
+
+
+@pytest.mark.evidence("R3", control="triage.transport:build_rules")
+@pytest.mark.parametrize("url,params,why", PINNED, ids=[p[2] for p in PINNED])
+def test_listing_is_pinned_to_the_configured_label_or_folder(url, params, why, proof):
+    """The tokens can list every folder; the allowlist lets the job list the configured label or folder only."""
+    from tests.helpers import make_world
+    world = make_world()
+    before = len(world.recorder.emitted)
+    with pytest.raises(PolicyViolation) as exc:
+        world.http.request("GET", url, params=params, headers={"Authorization": "Bearer t"})
+    assert len(world.recorder.emitted) == before
+    proof.line(f"{why}: {exc.value.reason}")

@@ -7,7 +7,7 @@ from email.message import EmailMessage
 from email.policy import SMTP
 
 MARKER_HEADER = "X-Triage-Key"
-_RE = re.compile(r"^\s*(re|aw|ر)\s*:\s*", re.I)
+_RE = re.compile(r"^\s*(re|aw|sv|رد)\s*:\s*", re.I)     # English, German, Nordic, Arabic reply prefixes
 
 
 def reply_subject(subject: str) -> str:

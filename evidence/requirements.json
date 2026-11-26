@@ -1,27 +1,54 @@
 {
  "R1": {
-  "title": "No message leaves the mailbox without a human",
-  "statement": "The job can read and write drafts. It cannot send, forward, reply, move or delete, whatever the token would allow.",
-  "lead": "gmail.compose can send. Here is what stops it, and the mutation that proves the test bites.",
-  "residual": "The Gmail token can send; the allowlist is what stops it."
+  "title": "Drafts only; a person presses Send",
+  "statement": "The job reads and writes drafts. Send, forward, reply, move and delete are refused by its transport before a byte leaves, whatever the token would allow.",
+  "lead": "gmail.compose can send. The transport refuses the call before it is emitted, and a mutant without that guard turns the suite red.",
+  "residual": "The Gmail token itself can send; the allowlist in this program is what stops it."
  },
  "R2": {
   "title": "One Scaleway region",
   "statement": "Job, secrets, image registry and ledger are declared in fr-par only, with no fallback region.",
-  "residual": "Serverless inference is in Paris today; the provider commits to Europe. Dedicated Deployment keeps it in one region (paid option)."
+  "residual": "Declared in configuration and validated locally; nothing is deployed. Serverless inference is in Paris today and committed to Europe; Dedicated Deployment keeps it in one region (paid)."
  },
  "R3": {
   "title": "Least privilege, residual risk declared",
   "statement": "Each connector asks for the narrowest scope that does the work, and what the code adds on top is written down.",
-  "residual": "Graph Mail.ReadWrite can delete and the Todoist token reaches every project; both limits live in code. No allowlist stops a stolen token."
+  "residual": "Graph Mail.ReadWrite can delete, both tokens can read any message by id, the Todoist token reaches every project, and the Scaleway policies cover the whole project. These limits live in code or in the project layout; no allowlist stops a stolen token.",
+  "matrix": [
+   {
+    "connector": "Gmail",
+    "granted": "gmail.readonly + gmail.compose: read everything, manage drafts, send.",
+    "code": "List the configured label only; read by id; create a draft in the thread. Send, trash, modify, delete refused.",
+    "residual": "The token can send. Draft header X-Triage-Key travels if a person sends it."
+   },
+   {
+    "connector": "Microsoft Graph",
+    "granted": "Mail.ReadWrite delegated, no Mail.Send: create, read, update, delete in every folder.",
+    "code": "List the configured folder, Drafts and Sent Items; createReply with body and marker only. Move, PATCH, DELETE refused.",
+    "residual": "The token can delete and edit any message."
+   },
+   {
+    "connector": "Todoist",
+    "granted": "task:add, in any project.",
+    "code": "One item_add per request, configured project only, no due date; uuid per task.",
+    "residual": "Titles are model-written from the email and leave the Scaleway region."
+   },
+   {
+    "connector": "Model endpoint",
+    "granted": "Inference API key.",
+    "code": "One POST route; no tools; strict output schema; added figures, dates and names refused.",
+    "residual": "Email text goes to the model; invented promises pass the checks."
+   }
+  ]
  },
  "R4": {
   "title": "Monthly rebuild",
-  "statement": "The image is rebuilt from scratch every month, tested, audited and described by an SBOM before it can replace the running one."
+  "statement": "The image is rebuilt from scratch, tested, audited and described by an SBOM before it can replace the running one. Scheduled monthly; the push and job update need Scaleway credentials.",
+  "residual": "The recorded rebuild was started by hand; the model catalogue check and the push were skipped (no Scaleway credentials)."
  },
  "R5": {
   "title": "Each email handled once",
-  "statement": "A durable ledger and a check with the provider mean one draft and one set of tasks per email, across hours, containers, crashes and concurrent runs."
+  "statement": "A durable ledger, a recorded task plan and a check with the provider mean one draft and one set of tasks per email, across hours, containers, stopped runs and concurrent runs. One failing message does not hold up the others."
  },
  "R6": {
   "title": "No content in logs",
@@ -29,10 +56,11 @@
  },
  "R7": {
   "title": "Untrusted email cannot steer the job",
-  "statement": "The model has no tools and picks no identifier. Its output is bounded by a schema and checked; anything doubtful goes to a person."
+  "statement": "The model has no tools and picks no identifier. Its output is bounded by a schema; added figures, dates and names, the wrong language, an echo of the email or an injection send it to a person. Invented promises and tone are not caught: that is why it stays a draft."
  },
  "R8": {
   "title": "Replies in the sender's language",
-  "statement": "English, German and Arabic get a reply in kind, right to left for Arabic, in the sender's own thread. Anything else gets English, flagged."
+  "statement": "English, German and Arabic get a reply in kind, right to left for Arabic, in the sender's own thread. Anything else gets English, flagged.",
+  "residual": "Arabic is checked with prepared answers (MIME, direction, thread). The local 8B model wrote no acceptable Arabic draft; reply quality in Arabic is not shown."
  }
 }

@@ -32,6 +32,8 @@ def _production(argv) -> int:
         print("missing configuration: " + ", ".join(exc.missing), file=sys.stderr)
         return 2
     rules = build_rules(todoist_project_id=s.todoist_project_id, llm_base_url=s.llm_base_url,
+                        gmail_label=s.mailbox if s.provider == "gmail" else None,
+                        graph_folder=s.mailbox if s.provider == "graph" else None,
                         ledger_s3=(s.ledger_bucket, s.ledger_prefix) if s.ledger_backend == "s3" else None,
                         ms_tenant=s.ms_tenant or None)
     http = build_client(rules)

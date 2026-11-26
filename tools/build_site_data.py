@@ -23,6 +23,20 @@ from triage_fakes.world import CORPUS, ROOT, build_world
 SITE = ROOT / "site" / "data"
 
 
+def all_reasons(rec: dict | None) -> list[str]:
+    """Every reason the job's checks give for a recorded output (the journal keeps the first)."""
+    from triage.checks import parse_reply, review, screen_injection
+    if not rec:
+        return []
+    call = rec["calls"][0]
+    user = call["messages"][1]["content"]
+    reasons = ["injection_rule"] if screen_injection(user) else []
+    reply = parse_reply(call["output"])
+    if reply is None:
+        return reasons + ["invalid_output"]
+    return reasons + review(reply, source=user, target_lang=rec["target_language"])
+
+
 def examples() -> dict:
     ex_dir = ROOT / "examples" / "qwen3-8b"
     world = build_world(recorded_script(ex_dir))
@@ -55,6 +69,7 @@ def examples() -> dict:
             "model_seconds": rec["calls"][0]["seconds"] if rec else None,
             "outcome": summary.outcomes.get(key, ""),
             "reason": reasons.get(key, ""),
+            "all_reasons": all_reasons(rec),
             "draft_written": draft is not None,
             "draft_body": draft.get_body(("plain",)).get_content().strip() if draft else "",
             "tasks": [t["content"] for t in world.todoist.tasks.values() if gm.thread_id in t["description"]],

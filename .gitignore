@@ -8,3 +8,8 @@ out/
 .terraform.lock.hcl
 /tmp/
 *.egg-info/
+# The presentation page and its deployment live outside this repository.
+site/
+worker.js
+wrangler.toml
+.wrangler/
